@@ -1,0 +1,50 @@
+// PRODUCTION schema (PostgreSQL) — use este em produção (Vercel + Supabase)
+// Para deploy:
+//   cp prisma/schema.prod.prisma prisma/schema.prisma
+//   git add . && git commit && git push
+// Para dev local, use: cp prisma/schema.dev.prisma prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model QuoteLead {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String
+  email       String?
+  vehicle     String?
+  plate       String?
+  year        String?
+  damageType  String?
+  parts       String?
+  description String?
+  photos      String?
+  status      String   @default("novo")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ChatLead {
+  id        String   @id @default(cuid())
+  name      String?
+  vehicle   String?
+  part      String?
+  message   String
+  phone     String?
+  channel   String   @default("chat")
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([handled])
+}

@@ -1,0 +1,45 @@
+// DEV schema (SQLite) — usado apenas para desenvolvimento local
+// Para usar:
+//   1. No .env.local: DATABASE_URL="file:/home/z/my-project/db/custom.db"
+//   2. Antes de rodar db:push, copie este arquivo para schema.prisma:
+//      cp prisma/schema.dev.prisma prisma/schema.prisma
+//   3. Rode bun run db:push
+//   4. Antes de commitar, restaure o schema.prisma de produção (Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model QuoteLead {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String
+  email       String?
+  vehicle     String?
+  plate       String?
+  year        String?
+  damageType  String?
+  parts       String?
+  description String?
+  photos      String?
+  status      String   @default("novo")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ChatLead {
+  id        String   @id @default(cuid())
+  name      String?
+  vehicle   String?
+  part      String?
+  message   String
+  phone     String?
+  channel   String   @default("chat")
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
