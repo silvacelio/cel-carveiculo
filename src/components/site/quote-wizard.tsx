@@ -371,6 +371,10 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
     const partsLabel = form.parts
       .map((id) => PARTS_OPTIONS.find((p) => p.id === id)?.label || id)
       .join(", ");
+    const fotosLine =
+      photos.length > 0
+        ? `\n*Fotos:* já enviadas pelo site (${photos.length}). Por favor, anexe-as aqui no WhatsApp também, pra o Célio receber mais rápido. 📸`
+        : "";
     return encodeURIComponent(
       `Olá! Vim pelo site da Cel-Car. Gostaria de um orçamento.\n\n` +
         `*Nome:* ${form.name}\n` +
@@ -380,7 +384,8 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
         `*Tipo de dano:* ${damageLabel}\n` +
         `*Peça(s):* ${partsLabel}\n` +
         `*Descrição:* ${form.description || "-"}\n` +
-        `*Telefone:* ${form.phone}`
+        `*Telefone:* ${form.phone}` +
+        fotosLine
     );
   };
 
@@ -483,10 +488,24 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                 <p className="text-muted-foreground mb-1 text-pretty">
                   Recebemos sua solicitação, <strong>{form.name}</strong>.
                 </p>
-                <p className="text-muted-foreground mb-6 text-sm">
-                  A Cel-Car vai analisar e responder em até 1 dia útil. Para
-                  resposta mais rápida, complete o envio pelo WhatsApp:
-                </p>
+                {photos.length > 0 ? (
+                  <div className="mt-3 mb-4 mx-auto max-w-md p-3 rounded-lg bg-green-50 border border-green-200 text-left">
+                    <p className="text-sm text-green-900 font-semibold mb-1 flex items-center gap-2">
+                      <CheckCircle2 className="size-4 shrink-0" />
+                      {photos.length} foto(s) recebida(s) com sucesso
+                    </p>
+                    <p className="text-xs text-green-800">
+                      O Célio já consegue ver suas fotos no painel. Para resposta
+                      mais rápida, abra o WhatsApp abaixo e <strong>anexe as
+                      mesmas fotos</strong> — isso acelera o atendimento.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground mb-6 text-sm">
+                    A Cel-Car vai analisar e responder em até 1 dia útil. Para
+                    resposta mais rápida, complete o envio pelo WhatsApp:
+                  </p>
+                )}
                 <div className="flex flex-col sm:flex-row gap-3 justify-center">
                   <Button
                     asChild
@@ -498,7 +517,9 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                       rel="noreferrer"
                     >
                       <MessageCircle className="size-4 mr-2" />
-                      Enviar pelo WhatsApp
+                      {photos.length > 0
+                        ? "Abrir WhatsApp e anexar fotos"
+                        : "Enviar pelo WhatsApp"}
                     </a>
                   </Button>
                   <Button
