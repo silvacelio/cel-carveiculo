@@ -89,7 +89,7 @@ interface FormData {
 }
 
 interface UploadedPhoto {
-  path: string;
+  path: string; // agora guarda um data URL (base64) — funciona em qualquer hospedagem
   name: string;
   size: number;
 }
@@ -107,7 +107,9 @@ const INITIAL_FORM: FormData = {
 };
 
 const MAX_PHOTOS = 5;
-const MAX_SIZE_MB = 5;
+const MAX_SOURCE_MB = 15; // limite do arquivo ORIGINAL que o usuário escolhe
+const COMPRESS_MAX_DIMENSION = 1280; // redimensiona para no máximo 1280px
+const COMPRESS_QUALITY = 0.72; // qualidade JPEG
 
 export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
   const [step, setStep] = useState(0);
@@ -153,6 +155,59 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
     }));
   };
 
+  /**
+   * Lê um File de imagem, redimensiona para no máximo COMPRESS_MAX_DIMENSION px
+   * (mantendo proporção) e devolve um data URL JPEG/PNG.
+   *
+   * Faz tudo isso no navegador (Canvas API), sem chamar API nenhuma.
+   * Funciona em qualquer hospedagem (Vercel, Netlify, etc.) porque
+   * não depende de escrever em disco.
+   */
+  const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("Imagem inválida ou corrompida."));
+        img.onload = () => {
+          let { width, height } = img;
+
+          // Redimensiona mantendo proporção se algum lado > máximo
+          if (width > height && width > COMPRESS_MAX_DIMENSION) {
+            height = Math.round((height * COMPRESS_MAX_DIMENSION) / width);
+            width = COMPRESS_MAX_DIMENSION;
+          } else if (height > COMPRESS_MAX_DIMENSION) {
+            width = Math.round((width * COMPRESS_MAX_DIMENSION) / height);
+            height = COMPRESS_MAX_DIMENSION;
+          }
+
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Canvas não suportado neste navegador."));
+            return;
+          }
+
+          // Fundo branco para imagens PNG com transparência virarem JPEG
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Mantém PNG só se a original for PNG; caso contrário JPEG (bem menor)
+          const usePng = file.type === "image/png";
+          const mime = usePng ? "image/png" : "image/jpeg";
+          const dataUrl = canvas.toDataURL(mime, COMPRESS_QUALITY);
+          resolve(dataUrl);
+        };
+        img.src = ev.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleFileSelect = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -166,45 +221,45 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
       return;
     }
 
-    const toUpload = Array.from(files).slice(0, available);
+    const toProcess = Array.from(files).slice(0, available);
     setUploadingPhotos(true);
 
+    const newPhotos: UploadedPhoto[] = [];
+
     try {
-      const formData = new FormData();
-      for (const f of toUpload) {
-        if (f.size > MAX_SIZE_MB * 1024 * 1024) {
-          toast.error(`${f.name} excede ${MAX_SIZE_MB}MB.`);
+      for (const f of toProcess) {
+        // Valida tipo — aceita qualquer imagem (image/*)
+        if (!f.type.startsWith("image/")) {
+          toast.error(`${f.name} não é uma imagem válida.`);
           continue;
         }
-        formData.append("photos", f);
+        // Valida tamanho do arquivo original (15 MB)
+        if (f.size > MAX_SOURCE_MB * 1024 * 1024) {
+          toast.error(`${f.name} excede ${MAX_SOURCE_MB}MB.`);
+          continue;
+        }
+
+        try {
+          const dataUrl = await compressImage(f);
+          newPhotos.push({
+            path: dataUrl, // data URL base64
+            name: f.name,
+            size: f.size,
+          });
+        } catch (err) {
+          console.error("[Compress error]", f.name, err);
+          toast.error(`${f.name} não pôde ser processada.`);
+        }
       }
 
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Erro no upload");
-      }
-
-      if (data.paths?.length) {
-        const newPhotos: UploadedPhoto[] = data.paths.map(
-          (p: string, i: number) => ({
-            path: p,
-            name: toUpload[i]?.name || "foto",
-            size: toUpload[i]?.size || 0,
-          })
-        );
+      if (newPhotos.length > 0) {
         setPhotos((prev) => [...prev, ...newPhotos]);
-        toast.success(`${newPhotos.length} foto(s) enviada(s).`);
+        toast.success(`${newPhotos.length} foto(s) adicionada(s).`);
       }
     } catch (error) {
       console.error(error);
       toast.error(
-        error instanceof Error ? error.message : "Falha no upload."
+        error instanceof Error ? error.message : "Falha ao processar fotos."
       );
     } finally {
       setUploadingPhotos(false);
@@ -233,6 +288,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
           .map((id) => PARTS_OPTIONS.find((p) => p.id === id)?.label || id)
           .join(", "),
         description: form.description,
+        // photos agora é um array de data URLs (base64) — vai direto como JSON
         photos: photos.length > 0 ? JSON.stringify(photos.map((p) => p.path)) : undefined,
       };
 
@@ -524,7 +580,8 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                       </h3>
                       <p className="text-sm text-muted-foreground">
                         Fotos ajudam a dar um orçamento mais preciso. Até{" "}
-                        {MAX_PHOTOS} fotos, {MAX_SIZE_MB}MB cada. Você também
+                        {MAX_PHOTOS} fotos. Elas são comprimidas
+                        automaticamente para enviar mais rápido. Você também
                         pode pular esta etapa.
                       </p>
                     </div>
@@ -541,7 +598,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                           <>
                             <Loader2 className="size-10 text-red-600 mx-auto mb-2 animate-spin" />
                             <p className="text-sm font-semibold text-foreground">
-                              Enviando fotos...
+                              Processando fotos...
                             </p>
                           </>
                         ) : (
@@ -551,7 +608,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                               Clique para enviar fotos
                             </p>
                             <p className="text-xs text-muted-foreground mt-1">
-                              JPG, PNG ou WEBP — até {MAX_SIZE_MB}MB cada
+                              JPG, PNG ou WEBP — comprimimos automaticamente
                             </p>
                           </>
                         )}
@@ -561,7 +618,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/jpeg,image/png,image/webp"
+                      accept="image/*"
                       multiple
                       className="hidden"
                       onChange={handleFileSelect}
@@ -604,7 +661,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                         <FileImage className="size-3.5" />
                         {photos.length} / {MAX_PHOTOS} fotos enviadas
                       </span>
-                      {photos.length > 0 && (
+                      {photos.length > 0 && photos.length < MAX_PHOTOS && (
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
@@ -901,12 +958,3 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                     <Send className="size-4 mr-2" />
                     Enviar orçamento
                   </>
-                )}
-              </Button>
-            )}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
