@@ -108,8 +108,11 @@ const INITIAL_FORM: FormData = {
 
 const MAX_PHOTOS = 5;
 const MAX_SOURCE_MB = 15; // limite do arquivo ORIGINAL que o usuário escolhe
-const COMPRESS_MAX_DIMENSION = 1280; // redimensiona para no máximo 1280px
-const COMPRESS_QUALITY = 0.72; // qualidade JPEG
+const COMPRESS_MAX_DIMENSION = 1024; // redimensiona para no máximo 1024px (era 1280)
+const COMPRESS_QUALITY = 0.62; // qualidade JPEG (era 0.72 — mais agressivo)
+// Limite total do payload que vamos enviar para a Vercel.
+// A Vercel corta em 4.5 MB no plano grátis — deixamos margem de segurança.
+const MAX_TOTAL_PAYLOAD_BYTES = 3_500_000; // ~3.3 MB (deixa folga p/ outros campos)
 
 export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
   const [step, setStep] = useState(0);
@@ -157,55 +160,71 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
 
   /**
    * Lê um File de imagem, redimensiona para no máximo COMPRESS_MAX_DIMENSION px
-   * (mantendo proporção) e devolve um data URL JPEG/PNG.
+   * (mantendo proporção) e devolve um data URL JPEG.
    *
    * Faz tudo isso no navegador (Canvas API), sem chamar API nenhuma.
    * Funciona em qualquer hospedagem (Vercel, Netlify, etc.) porque
    * não depende de escrever em disco.
+   *
+   * Se a foto ficar maior que TARGET_SIZE_BYTES após a primeira compressão,
+   * recomprime com qualidade progressivamente menor até caber.
    */
-  const compressImage = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
-      reader.onload = (ev) => {
+  const compressImage = async (file: File): Promise<string> => {
+    const TARGET_SIZE_BYTES = 350_000; // ~350 KB por foto (base64 ≈ 470 KB)
+
+    const readImg = (src: string): Promise<HTMLImageElement> =>
+      new Promise((resolve, reject) => {
         const img = new Image();
         img.onerror = () => reject(new Error("Imagem inválida ou corrompida."));
-        img.onload = () => {
-          let { width, height } = img;
+        img.onload = () => resolve(img);
+        img.src = src;
+      });
 
-          // Redimensiona mantendo proporção se algum lado > máximo
-          if (width > height && width > COMPRESS_MAX_DIMENSION) {
-            height = Math.round((height * COMPRESS_MAX_DIMENSION) / width);
-            width = COMPRESS_MAX_DIMENSION;
-          } else if (height > COMPRESS_MAX_DIMENSION) {
-            width = Math.round((width * COMPRESS_MAX_DIMENSION) / height);
-            height = COMPRESS_MAX_DIMENSION;
-          }
-
-          const canvas = document.createElement("canvas");
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            reject(new Error("Canvas não suportado neste navegador."));
-            return;
-          }
-
-          // Fundo branco para imagens PNG com transparência virarem JPEG
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-
-          // Mantém PNG só se a original for PNG; caso contrário JPEG (bem menor)
-          const usePng = file.type === "image/png";
-          const mime = usePng ? "image/png" : "image/jpeg";
-          const dataUrl = canvas.toDataURL(mime, COMPRESS_QUALITY);
-          resolve(dataUrl);
-        };
-        img.src = ev.target?.result as string;
-      };
+    const reader = new FileReader();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+      reader.onload = (ev) => resolve(ev.target?.result as string);
       reader.readAsDataURL(file);
     });
+
+    const img = await readImg(dataUrl);
+    let { width, height } = img;
+
+    // Redimensiona mantendo proporção se algum lado > máximo
+    if (width > height && width > COMPRESS_MAX_DIMENSION) {
+      height = Math.round((height * COMPRESS_MAX_DIMENSION) / width);
+      width = COMPRESS_MAX_DIMENSION;
+    } else if (height > COMPRESS_MAX_DIMENSION) {
+      width = Math.round((width * COMPRESS_MAX_DIMENSION) / height);
+      height = COMPRESS_MAX_DIMENSION;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas não suportado neste navegador.");
+    }
+
+    // Fundo branco para imagens PNG com transparência virarem JPEG
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    // Mantém PNG só se a original for PNG; caso contrário JPEG (bem menor)
+    const usePng = file.type === "image/png";
+    const mime = usePng ? "image/png" : "image/jpeg";
+
+    // Compressão iterativa: se ainda estiver grande, baixa a qualidade.
+    let quality = COMPRESS_QUALITY;
+    let out = canvas.toDataURL(mime, quality);
+    while (!usePng && out.length > TARGET_SIZE_BYTES && quality > 0.25) {
+      quality -= 0.12;
+      out = canvas.toDataURL(mime, quality);
+    }
+
+    return out;
   };
 
   const handleFileSelect = async (
@@ -274,6 +293,19 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
+      const photosJson =
+        photos.length > 0 ? JSON.stringify(photos.map((p) => p.path)) : undefined;
+
+      // Verificação de segurança: se o total passar de 3.3 MB,
+      // a Vercel rejeita com 413. Avisamos o usuário antes.
+      if (photosJson && photosJson.length > MAX_TOTAL_PAYLOAD_BYTES) {
+        toast.error(
+          "Fotos muito grandes. Remova algumas e tente novamente, ou envie pelo WhatsApp."
+        );
+        setSubmitting(false);
+        return;
+      }
+
       const payload = {
         name: form.name,
         phone: form.phone,
@@ -289,7 +321,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
           .join(", "),
         description: form.description,
         // photos agora é um array de data URLs (base64) — vai direto como JSON
-        photos: photos.length > 0 ? JSON.stringify(photos.map((p) => p.path)) : undefined,
+        photos: photosJson,
       };
 
       const response = await fetch("/api/quote", {
@@ -298,8 +330,24 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
         body: JSON.stringify(payload),
       });
 
+      // Lida com resposta não-JSON (ex.: 413 da Vercel) de forma amigável
+      let data: { error?: string; success?: boolean; id?: string };
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        // Vercel pode retornar HTML (413, 504, etc.) — usa status para msg
+        if (response.status === 413) {
+          throw new Error(
+            "Fotos grandes demais. Reduza a quantidade ou envie pelo WhatsApp."
+          );
+        }
+        throw new Error(
+          `Erro ${response.status}. Tente novamente ou chame no WhatsApp.`
+        );
+      }
+
       if (!response.ok) {
-        const data = await response.json();
         throw new Error(data.error || "Erro ao enviar orçamento");
       }
 
@@ -308,7 +356,9 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
     } catch (error) {
       console.error(error);
       toast.error(
-        "Não foi possível enviar agora. Tente pelo WhatsApp (21) 97708-6841."
+        error instanceof Error
+          ? error.message
+          : "Não foi possível enviar agora. Tente pelo WhatsApp (21) 97708-6841."
       );
     } finally {
       setSubmitting(false);
@@ -958,7 +1008,8 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                     <Send className="size-4 mr-2" />
                     Enviar orçamento
                   </>
-                        </Button>
+                )}
+              </Button>
             )}
           </div>
         )}
