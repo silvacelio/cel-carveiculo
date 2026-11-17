@@ -958,8 +958,7 @@ export function QuoteWizard({ open, onOpenChange }: QuoteWizardProps) {
                     <Send className="size-4 mr-2" />
                     Enviar orçamento
                   </>
-                )}
-              </Button>
+                        </Button>
             )}
           </div>
         )}
