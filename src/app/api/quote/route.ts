@@ -11,8 +11,15 @@ interface QuotePayload {
   damageType?: string;
   parts?: string;
   description?: string;
+  // JSON-stringified array of photo data URLs (base64).
+  // Aumentado de 2.000 para 5.000.000 caracteres para suportar
+  // até ~5 fotos comprimidas em base64 (~750 KB cada).
   photos?: string;
 }
+
+// Limite do campo `photos` no banco. 5_000_000 chars ≈ 3.7 MB de base64,
+// suficiente para 5 fotos comprimidas a ~150 KB cada.
+const MAX_PHOTOS_FIELD_LENGTH = 5_000_000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -36,6 +43,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Valida o campo `photos` antes de gravar.
+    // Aceita apenas um array JSON válido de strings (cada uma um data URL).
+    let photosField: string | null = null;
+    if (body.photos) {
+      const raw = String(body.photos);
+      if (raw.length > MAX_PHOTOS_FIELD_LENGTH) {
+        return NextResponse.json(
+          {
+            error:
+              "Total de fotos excede o tamanho máximo permitido. Envie menos fotos ou imagens menores.",
+          },
+          { status: 400 }
+        );
+      }
+      // Tenta fazer parse para garantir que é um array válido de strings.
+      try {
+        const parsed = JSON.parse(raw);
+        if (
+          !Array.isArray(parsed) ||
+          parsed.some((p) => typeof p !== "string")
+        ) {
+          throw new Error("formato inválido");
+        }
+        photosField = raw;
+      } catch {
+        return NextResponse.json(
+          { error: "Formato de fotos inválido." },
+          { status: 400 }
+        );
+      }
+    }
+
     const lead = await db.quoteLead.create({
       data: {
         name: String(body.name).slice(0, 200),
@@ -51,7 +90,7 @@ export async function POST(req: NextRequest) {
         description: body.description
           ? String(body.description).slice(0, 2000)
           : null,
-        photos: body.photos ? String(body.photos).slice(0, 2000) : null,
+        photos: photosField,
       },
     });
 
